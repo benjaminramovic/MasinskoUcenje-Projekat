@@ -1,0 +1,12 @@
+- Prikupljanje podataka pomoću API-ja - uradjeno
+- Kreiranje i proširenje dataset-a - uradjeno
+- Čišćenje i priprema podataka
+- Vizualizacija podataka
+- Klasifikacija korišćenjem klasičnih modela
+- Regresija korišćenjem klasičnih modela
+- Korišćenje encoder modela za klasifikaciju
+- Generativna klasifikacija pomoću promptova
+- Fine-tuning modela
+- Evaluacija i poređenje modela
+- Analiza grešaka modela
+- Razvoj jednostavne aplikacije za prikaz rezultata
