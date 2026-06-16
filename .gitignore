@@ -1,0 +1,14 @@
+.worktrees/
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+*.log
+test-results/
+playwright-report/
+artifacts/models/*.joblib
+artifacts/models/*.json
+artifacts/metrics/*.json
+artifacts/figures/*.png
+Turismy/reviews_enriched.csv
