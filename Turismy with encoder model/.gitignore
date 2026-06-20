@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Build / distribucija
+.dist/
+build/
+*.egg-info/
+
+# Rezultati eksperimenata
+results/
+
+# Model fajlovi
+*.h5
+*.pkl
+*.pt
