@@ -13,6 +13,6 @@ attributes = ["cleanliness", "location", "luxury", "family_friendly"]
 
 for attr in attributes:
     sample[f"{attr}_benjamin"] = ""
-    sample[f"{attr}_koleginica"] = ""
+    sample[f"{attr}_mirnesa"] = ""
 
 sample.to_csv("reviews_sample_full.csv", index=False)
