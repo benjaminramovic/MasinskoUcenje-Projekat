@@ -205,7 +205,8 @@ def compute_metrics(eval_pred):
 
 
 model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME,
+    #MODEL_NAME,
+    "./results/checkpoint-5250",
     num_labels=4,
     problem_type="multi_label_classification"
 )
@@ -235,7 +236,7 @@ RUN_TRAINING = False
 if RUN_TRAINING:
     trainer.train()
 
-#test_results = trainer.predict(test_dataset)
+test_results = trainer.predict(test_dataset)
 
 # print("TEST METRICS:")
 # print(test_results.metrics)
@@ -263,5 +264,5 @@ with torch.no_grad():
 predictions = torch.sigmoid(outputs.logits)
 
 
-
+print("Predictions:")
 print(predictions)
