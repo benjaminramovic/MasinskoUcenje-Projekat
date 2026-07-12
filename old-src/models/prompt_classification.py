@@ -9,7 +9,6 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-import os
 
 from src.data.prepare_dataset import DEFAULT_OUTPUT as DEFAULT_DATASET
 from src.data.prepare_dataset import prepare_dataset
@@ -41,104 +40,61 @@ def _truthy(value: Any) -> int:
     return int(normalized in {"1", "true", "yes", "y", "positive", "present"})
 
 
-# def parse_prompt_labels(text: str, label_columns: tuple[str, ...] = LABEL_COLUMNS) -> dict[str, int]:
-#     # json_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-#     json_match = re.search(
-#         r"\{[\s\S]*",
-#         text
-#     )
-#     if json_match:
-#         json_text = json_match.group(0)
-
-    
-#         if json_text.count("{") > json_text.count("}"):
-#             json_text += "}"
-
-#         try:
-#             payload = json.loads(json_text)
-#         except json.JSONDecodeError:
-#             payload = None
-#         if isinstance(payload, dict):
-#             return {label: _truthy(payload.get(label, 0)) for label in label_columns}
-
-#     parsed: dict[str, int] = {}
-#     for label in label_columns:
-#         label_pattern = re.escape(label).replace("_", r"[_\s-]?")
-#         match = re.search(
-#             rf"{label_pattern}\s*[:=]\s*(true|false|yes|no|1|0)",
-#             text,
-#             flags=re.IGNORECASE,
-#         )
-#         parsed[label] = _truthy(match.group(1)) if match else 0
-#     return parsed
-def parse_prompt_labels(
-    text: str,
-    label_columns: tuple[str, ...] = LABEL_COLUMNS
-) -> dict[str, int]:
-
-    # uzmi deo od prve { do kraja
-    json_text = text[text.find("{"):].strip()
-
-    # ako nedostaje zatvarajuća zagrada
-    if json_text.count("{") > json_text.count("}"):
-        json_text += "}"
-
-    try:
-        payload = json.loads(json_text)
-
+def parse_prompt_labels(text: str, label_columns: tuple[str, ...] = LABEL_COLUMNS) -> dict[str, int]:
+    json_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if json_match:
+        try:
+            payload = json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            payload = None
         if isinstance(payload, dict):
-            return {
-                label: _truthy(payload.get(label, 0))
-                for label in label_columns
-            }
+            return {label: _truthy(payload.get(label, 0)) for label in label_columns}
 
-    except json.JSONDecodeError:
-        pass
-
-
-    # fallback ako JSON potpuno ne uspe
-    parsed = {}
-
+    parsed: dict[str, int] = {}
     for label in label_columns:
+        label_pattern = re.escape(label).replace("_", r"[_\s-]?")
         match = re.search(
-            rf"{label}\s*[:=]\s*(0|1|true|false)",
+            rf"{label_pattern}\s*[:=]\s*(true|false|yes|no|1|0)",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
-
-        parsed[label] = (
-            _truthy(match.group(1))
-            if match
-            else 0
-        )
-
+        parsed[label] = _truthy(match.group(1)) if match else 0
     return parsed
 
 
 def build_prompt(comment: str) -> str:
-    return f"""
-You are a tourism review classifier.
+    return (
+        "Classify this tourism review with 0 or 1 for cleanliness, location, luxury, "
+        "and family_friendly. Return JSON only with keys cleanliness, location, luxury, "
+        f"family_friendly. Review: {comment}"
+    )
 
-Classify the following review into four binary labels.
 
-Return ONLY valid JSON in the following format:
+LABEL_PROMPT_DESCRIPTIONS = {
+    "cleanliness": "cleanliness or hygiene, including clean, spotless, tidy, dirty, smell, bathroom, or kitchen",
+    "location": (
+        "the place location, including perfect location, central, close to attractions, walking distance, "
+        "neighborhood, transport, far away, or nearby places"
+    ),
+    "luxury": "luxury, premium comfort, elegant or beautiful design, unique/special stay, view, privacy, or high-end feel",
+    "family_friendly": "family, children, kids, parents, baby, suitable for families, toys, stroller, or child-friendly stay",
+}
 
-{{
-  "cleanliness": 0,
-  "location": 0,
-  "luxury": 0,
-  "family_friendly": 0
-}}
 
-Definitions:
-- cleanliness: mentions cleanliness, hygiene, dirty, clean rooms, bathroom, smell, etc.
-- location: mentions location, distance, neighborhood, transport, city center, attractions, etc.
-- luxury: mentions luxury, premium comfort, elegant design, beautiful view, high-end experience, privacy.
-- family_friendly: mentions families, children, kids, babies, toys, playground, family stay.
+def build_label_prompt(comment: str, label: str) -> str:
+    description = LABEL_PROMPT_DESCRIPTIONS.get(label, label.replace("_", " "))
+    return (
+        f"Review: {comment}\n"
+        f"Question: Does the review mention {description}?\n"
+        "Answer with exactly one word: yes or no."
+    )
 
-Review:
-{comment}
-"""
+
+def parse_binary_answer(text: str) -> int:
+    normalized = text.strip().lower()
+    if re.search(r"\byes\b|\btrue\b|\b1\b", normalized):
+        return 1
+    return 0
 
 
 def generation_backend_for_model(model_name: str) -> str:
@@ -163,100 +119,49 @@ def _load_chat_generator(model_name: str, max_new_tokens: int) -> PromptGenerato
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    # ZA MAC:
-    # device = "mps" if torch.backends.mps.is_available() else "cpu"
-    # dtype = torch.float16 if device == "mps" else torch.float32
-    # tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
-    # model.to(device)
-
-
-    # ZA WINDOWS
-    if torch.cuda.is_available():
-        device = "cuda"
-        dtype = torch.float16
-    else:
-        device = "cpu"
-        dtype = torch.float16
-
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=True
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto",
-        trust_remote_code=True
-    )
-
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    dtype = torch.float16 if device == "mps" else torch.float32
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
+    model.to(device)
     model.eval()
-    
-
-
-    #model.eval()
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    system_prompt = (
+        "You are a strict tourism-review classifier. "
+        "Answer the user's binary question with exactly one word: yes or no."
+    )
+
     def generate(prompt: str) -> str:
         messages = [
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
-
         if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
             encoded = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
             )
-
-            # apply_chat_template vraća BatchEncoding, ne Tensor
-            if isinstance(encoded, dict) or hasattr(encoded, "input_ids"):
-                if hasattr(encoded, "to"):
-                    encoded = encoded.to(device)
-                else:
-                    encoded = {k: v.to(device) for k, v in encoded.items()}
-
-            input_ids = encoded["input_ids"]
-            attention_mask = encoded.get(
-                "attention_mask",
-                torch.ones_like(input_ids)
-            )
-
         else:
-            encoded = tokenizer(
-                prompt,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            )
+            rendered = f"{system_prompt}\n\n{prompt}\nAnswer:"
+            encoded = tokenizer(rendered, return_tensors="pt").input_ids
 
-            encoded = {k: v.to(device) for k, v in encoded.items()}
-
-            input_ids = encoded["input_ids"]
-            attention_mask = encoded["attention_mask"]
-
+        encoded = encoded.to(device)
+        attention_mask = torch.ones_like(encoded, device=device)
         with torch.inference_mode():
             output_ids = model.generate(
-                input_ids=input_ids,
+                encoded,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
-                use_cache=True,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
-
-        generated_ids = output_ids[0, input_ids.shape[-1]:]
-
-        return tokenizer.decode(
-            generated_ids,
-            skip_special_tokens=True,
-        ).strip()
+        generated_ids = output_ids[0, encoded.shape[-1] :]
+        return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     return generate
 
@@ -283,33 +188,24 @@ def run_prompt_classification(
     generator: PromptGenerator | None = None,
     sample_size: int = 500,
     random_state: int = 42,
-    max_new_tokens: int = 64,
+    max_new_tokens: int = 12,
 ) -> PromptClassificationResult:
     sample = df.sample(n=min(sample_size, len(df)), random_state=random_state).reset_index(drop=True)
     generate = generator or _load_pipeline_generator(model_name, max_new_tokens=max_new_tokens)
 
     predictions: list[list[int]] = []
     examples: list[dict[str, Any]] = []
-    for i, row in enumerate(sample.itertuples(index=False), start=1):
+    for row in sample.itertuples(index=False):
         comment = str(getattr(row, text_column))
         raw_outputs: dict[str, str] = {}
         parsed: dict[str, int] = {}
-        print(f"Processing comment {i}/{len(sample)} - START")
-
-        raw_output = generate(build_prompt(comment))
-
-        print(f"Processing comment {i}/{len(sample)} - GENERATED")
-
-        parsed = parse_prompt_labels(raw_output, label_columns)
-
-        print(f"Processing comment {i}/{len(sample)} - PARSED")
-        
+        for label in label_columns:
+            raw_output = generate(build_label_prompt(comment, label))
+            raw_outputs[label] = raw_output
+            parsed[label] = parse_binary_answer(raw_output)
         predictions.append([parsed[label] for label in label_columns])
-        examples.append({
-            "comment": comment,
-            "raw_output": raw_output,
-            "parsed": parsed
-        })
+        examples.append({"comment": comment, "raw_outputs": raw_outputs, "parsed": parsed})
+
     y_true = sample[list(label_columns)].astype(int).to_numpy()
     y_pred = np.asarray(predictions, dtype=int)
     metrics = classification_metrics(y_true, y_pred, label_columns)
@@ -328,7 +224,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run local prompt-based generative classification.")
     parser.add_argument("--sample-size", type=int, default=500)
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
-    parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--max-new-tokens", type=int, default=12)
     args = parser.parse_args()
 
     df = load_dataset()
