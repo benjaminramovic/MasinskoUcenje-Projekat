@@ -160,44 +160,43 @@ def _load_text2text_generator(model_name: str, max_new_tokens: int) -> PromptGen
 
 
 def _load_chat_generator(model_name: str, max_new_tokens: int) -> PromptGenerator:
+    """
+    Ucitava chat model samo jednom i vraca funkciju generate(prompt).
+
+    Na Apple Silicon racunarima koristi MPS (Apple GPU), a ako MPS nije
+    dostupan koristi CPU.
+    """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    # ZA MAC:
-    # device = "mps" if torch.backends.mps.is_available() else "cpu"
-    # dtype = torch.float16 if device == "mps" else torch.float32
-    # tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
-    # model.to(device)
-
-
-    # ZA WINDOWS
-    if torch.cuda.is_available():
-        device = "cuda"
+    # 1. Izbor uredjaja na kome ce model raditi.
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
         dtype = torch.float16
+        print("Model se ucitava na Apple GPU-u (MPS).")
     else:
-        device = "cpu"
-        dtype = torch.float16
+        device = torch.device("cpu")
+        dtype = torch.float32
+        print("MPS nije dostupan. Model se ucitava na CPU-u.")
 
-
+    # 2. Tokenizer pretvara tekst u brojeve koje model razume.
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        trust_remote_code=True
+        trust_remote_code=True,
     )
 
+    # 3. Model se ucitava SAMO JEDNOM.
+    # Ne koristimo device_map="auto" na MPS-u, vec ga rucno prebacujemo
+    # na izabrani uredjaj.
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
     )
 
+    model.to(device)
     model.eval()
-    
-
-
-    #model.eval()
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -207,26 +206,15 @@ def _load_chat_generator(model_name: str, max_new_tokens: int) -> PromptGenerato
             {"role": "user", "content": prompt},
         ]
 
+        # Qwen je chat model, pa tokenizer pravi ispravan chat format.
         if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
             encoded = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
                 return_tensors="pt",
             )
-
-            # apply_chat_template vraća BatchEncoding, ne Tensor
-            if isinstance(encoded, dict) or hasattr(encoded, "input_ids"):
-                if hasattr(encoded, "to"):
-                    encoded = encoded.to(device)
-                else:
-                    encoded = {k: v.to(device) for k, v in encoded.items()}
-
-            input_ids = encoded["input_ids"]
-            attention_mask = encoded.get(
-                "attention_mask",
-                torch.ones_like(input_ids)
-            )
-
         else:
             encoded = tokenizer(
                 prompt,
@@ -235,11 +223,17 @@ def _load_chat_generator(model_name: str, max_new_tokens: int) -> PromptGenerato
                 truncation=True,
             )
 
-            encoded = {k: v.to(device) for k, v in encoded.items()}
+        # I tekstualni ulaz mora biti na istom uredjaju kao model.
+        encoded = {key: value.to(device) for key, value in encoded.items()}
 
-            input_ids = encoded["input_ids"]
-            attention_mask = encoded["attention_mask"]
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get(
+            "attention_mask",
+            torch.ones_like(input_ids),
+        )
 
+        # inference_mode govori PyTorchu da ne racuna gradijente,
+        # jer ovde samo koristimo model, a ne treniramo ga.
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids=input_ids,
@@ -251,6 +245,7 @@ def _load_chat_generator(model_name: str, max_new_tokens: int) -> PromptGenerato
                 eos_token_id=tokenizer.eos_token_id,
             )
 
+        # Model vraca ulaz + novi odgovor. Uzimamo samo novogenerisani deo.
         generated_ids = output_ids[0, input_ids.shape[-1]:]
 
         return tokenizer.decode(
@@ -290,26 +285,27 @@ def run_prompt_classification(
 
     predictions: list[list[int]] = []
     examples: list[dict[str, Any]] = []
+    
     for i, row in enumerate(sample.itertuples(index=False), start=1):
         comment = str(getattr(row, text_column))
-        raw_outputs: dict[str, str] = {}
-        parsed: dict[str, int] = {}
-        print(f"Processing comment {i}/{len(sample)} - START")
 
         raw_output = generate(build_prompt(comment))
-
-        print(f"Processing comment {i}/{len(sample)} - GENERATED")
-
         parsed = parse_prompt_labels(raw_output, label_columns)
 
-        print(f"Processing comment {i}/{len(sample)} - PARSED")
-        
-        predictions.append([parsed[label] for label in label_columns])
+        predictions.append([
+            parsed[label]
+            for label in label_columns
+        ])
+
         examples.append({
             "comment": comment,
             "raw_output": raw_output,
-            "parsed": parsed
+            "parsed": parsed,
         })
+
+        if i == 1 or i % 25 == 0 or i == len(sample):
+            print(f"Obrađeno: {i}/{len(sample)} recenzija")
+
     y_true = sample[list(label_columns)].astype(int).to_numpy()
     y_pred = np.asarray(predictions, dtype=int)
     metrics = classification_metrics(y_true, y_pred, label_columns)
